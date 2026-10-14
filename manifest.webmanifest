@@ -1,0 +1,16 @@
+{
+  "name": "Cüzdan Defteri",
+  "short_name": "Cüzdan",
+  "description": "Borç, taksit, gelir-gider ve varlık takibi",
+  "lang": "tr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#EDF1EF",
+  "theme_color": "#0D6A5B",
+  "icons": [
+    {"src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+    {"src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+    {"src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+  ]
+}
