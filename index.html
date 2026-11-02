@@ -205,6 +205,12 @@ function normalize(s){var b=blank();if(!s||typeof s!=="object")return b;s=JSON.p
   if(old.length){old.forEach(function(d){var c=b.cards.filter(function(x){return x.bank===d.bank;})[0];if(!c){c={id:uid(),bank:d.bank||"Kart",name:"",dueDay:"",plan:{}};b.cards.push(c);}
     for(var i=0;i<d.count;i++){var ym=addM(d.start,i);c.plan[ym]=Math.round(((c.plan[ym]||0)+d.monthly)*100)/100;}});
     b.debts=b.debts.filter(function(d){return d.type!=="kart";});}
+  // sürekli gelirlere başlangıç ayı: ilk kaydın girildiği ay
+  if(b.incomes.some(function(x){return x.recurring&&!x.since;})){var ms=[];
+    (b.expenses||[]).forEach(function(x){ms.push(x.month);});(b.payments||[]).forEach(function(x){ms.push(x.month);});(b.savings||[]).forEach(function(x){ms.push(x.month);});
+    b.incomes.forEach(function(x){if(!x.recurring)ms.push(x.month);});
+    var first=ms.filter(function(m){return /^\d{4}-\d{2}$/.test(m||"");}).sort(function(a,c){return idx(a)-idx(c);})[0]||now();if(idx(first)>idx(now()))first=now();
+    b.incomes.forEach(function(x){if(x.recurring&&!x.since)x.since=first;});}
   return b;}
 
 var S=null, view={tab:"ozet",month:now(),debtFilter:"hepsi"};
@@ -278,7 +284,7 @@ function saveApply(x,sign){if(x.status!=="done")return;
 function gainOf(a){if(!(a.cost>0&&a.costQty>0)||a.kind==="TL")return null;var cur=a.costQty*unitPrice(a);return {cost:a.cost,cur:cur,diff:cur-a.cost,pct:(cur-a.cost)/a.cost*100,unitCost:a.cost/a.costQty};}
 function gainHtml(g){if(!g)return "";var c=g.diff>=0?"var(--ok)":"var(--bad)",s=g.diff>=0?"+":"−";return '<div class="s">alış '+tl(g.cost)+' · şimdi '+tl(g.cur)+' · <b style="color:'+c+'">'+s+tl(Math.abs(g.diff))+' ('+s+'%'+n(Math.round(Math.abs(g.pct)*10)/10)+')</b></div>';}
 function availOf(src,m,back){var p=splitRef(src),b=back?back(src):0;
-  if(p[0]==="inc"){var x=find(S.incomes,p[1]);return x?(+x.amount-usedFromSrc(src,m)+b):0;}
+  if(p[0]==="inc"){var x=find(S.incomes,p[1]);return x?(incAmt(x,m)-usedFromSrc(src,m)+b):0;}
   var a=find(S.assets,p[1]);return a?assetTL(a)+b:0;}
 function overdraw(rows,m,back){var agg={},out=[];rows.forEach(function(r){if(r.amount>0)agg[r.src]=(agg[r.src]||0)+r.amount;});
   for(var s in agg){var av=availOf(s,m,back);if(agg[s]>av+0.5)out.push({src:s,avail:av,want:agg[s]});}return out;}
@@ -287,10 +293,23 @@ function overText(rows,m,back){var ov=overdraw(rows,m,back);return ov.length?'<d
 function kindPrice(k,lot){if(k==="TL")return 1;if(k==="HISSE")return +lot||0;return S.rates[RATE_KEY[k]]||0;}
 function qtyText(k,q){if(k==="TL")return tl(q)+" TL birikim";if(k==="USD")return n(q)+" $";if(k==="EUR")return n(q)+" €";if(k==="HISSE")return n(q)+" lot hisse";
   if(k==="GRAM")return n(q)+" gram altın";return n(q)+" "+GOLD_NAME[k]+" altın";}
-function incomeIn(ym){return S.incomes.filter(function(x){return x.recurring||x.month===ym;}).reduce(function(a,x){return a+(+x.amount||0);},0);}
+function incomeIn(ym){return S.incomes.filter(function(x){return incActive(x,ym);}).reduce(function(a,x){return a+incAmt(x,ym);},0);}
+function incAmt(x,ym){var o=x.amounts&&+x.amounts[ym];return o>0?o:(+x.amount||0);}
+function incActive(x,ym){if(!x.recurring)return x.month===ym;return !x.since||idx(ym)>=idx(x.since);}
+function incReceived(x,ym){var c=now();if(idx(ym)<idx(c))return true;if(ym!==c)return false;var d=+x.day||0;return !d||new Date().getDate()>=d;}
+function incDayTxt(x,ym){var p=ym.split("-");return x.day+" "+TR_MONTHS[+p[1]-1];}
+var CC=null;
+function incCarry(x,upto){var u=upto||now();if(idx(u)>idx(now()))u=now();var key=x.id+"|"+u;CC=CC||{};if(key in CC)return CC[key];
+  var s0=x.recurring?(x.since||u):x.month,t=0;
+  for(var i=idx(s0);i<idx(u);i++){var ym=fromIdx(i);if(!incActive(x,ym))continue;t+=Math.max(0,incAmt(x,ym)-usedFromSrc("inc:"+x.id,ym));}
+  return CC[key]=t;}
+function carryTo(aid,upto){return S.incomes.reduce(function(a,x){var ac=incAcct(x);return a+((ac?ac.id:"")===(aid||"")?incCarry(x,upto):0);},0);}
+function monthNet(k){var G=incomeIn(k),U=S.incomes.filter(function(x){return incActive(x,k);}).reduce(function(a,x){return a+Math.min(incAmt(x,k),usedFromSrc("inc:"+x.id,k));},0);
+  var BK=Math.max(0,debtLoad(k)-paidCapped(function(p){return p.month===k;})),Hu=S.expenses.filter(function(x){return x.month===k;}).reduce(function(a,x){return a+expUnpaid(x);},0);
+  return G-U-BK-Hu;}
 function spentIn(ym){return S.expenses.filter(function(x){return x.month===ym;}).reduce(function(a,x){return a+(+x.amount||0);},0);}
-function assetTL(a){if(a.kind==="TL")return a.qty;if(a.kind==="HISSE")return a.qty*(a.price||0);return a.qty*(S.rates[RATE_KEY[a.kind]]||0);}
-function assetsTotal(){return S.assets.reduce(function(a,x){return a+assetTL(x);},0);}
+function assetTL(a,upto){if(a.kind==="TL")return a.qty+carryTo(a.id,upto);if(a.kind==="HISSE")return a.qty*(a.price||0);return a.qty*(S.rates[RATE_KEY[a.kind]]||0);}
+function assetsTotal(upto){return S.assets.reduce(function(a,x){return a+assetTL(x,upto);},0)+carryTo("",upto);}
 function ratioClass(r){return r<.35?"ok":r<.5?"warn":"bad";}
 function ratioText(r){return r<.35?"Sağlıklı":r<.5?"Dikkat":"Yüksek";}
 function ratesMissing(){var need={};S.assets.forEach(function(a){if(RATE_KEY[a.kind])need[RATE_KEY[a.kind]]=1;});S.debts.forEach(function(d){if(d.type==="gun")need[RATE_KEY[gunUnit(d)]]=1;});
@@ -336,9 +355,9 @@ function renderOzet(){
     var src=g.items.length>1?g.items.map(function(x){return esc(srcName(x.src))+' '+tl(x.amount);}).join(' + '):esc(srcName(p.src))+(p.gold?' ('+n(p.qty)+' '+(function(){var a=find(S.assets,p.src.slice(4));return a?(a.kind==="GRAM"?"gram":GOLD_NAME[a.kind]||""):"";})()+' altınla)':'');
     return '<div class="item tap" tabindex="0" role="button" data-act="editPay" data-id="'+p.id+'"><div><div class="t">'+esc(dstName(p.dst))+'</div><div class="s">Kaynak: '+src+(p.note?' · '+esc(p.note):'')+'</div></div><div class="v">'+tl(t)+'</div></div>';}).join("")+'</div>';}
   else h+='<div class="empty">Bir taksit ya da ekstre ödediğinde buradan kaydet: hangi hesaptan ödediğini ve hangi borca gittiğini seç.</div>';
-  var srcs={};pays.forEach(function(p){srcs[p.src]=1;});svs.forEach(function(x){if(x.status==="done")srcs[x.src]=1;});exs.forEach(function(x){expParts(x).forEach(function(p){srcs[p.src]=1;});});S.incomes.forEach(function(x){if(x.recurring||x.month===m)srcs["inc:"+x.id]=1;});
+  var srcs={};pays.forEach(function(p){srcs[p.src]=1;});svs.forEach(function(x){if(x.status==="done")srcs[x.src]=1;});exs.forEach(function(x){expParts(x).forEach(function(p){srcs[p.src]=1;});});S.incomes.forEach(function(x){if(incActive(x,m))srcs["inc:"+x.id]=1;});
   var srcRows=Object.keys(srcs).map(function(s){var pd=usedFromSrc(s,m),p=splitRef(s),left,before;
-    if(p[0]==="inc"){var x=find(S.incomes,p[1]);if(!x)return "";before=+x.amount;left=before-pd;}
+    if(p[0]==="inc"){var x=find(S.incomes,p[1]);if(!x)return "";before=incAmt(x,m);left=before-pd;}
     else{var a=find(S.assets,p[1]);if(!a)return "";left=assetTL(a);before=left+pd;}
     return '<div class="item"><div><div class="t">'+esc(srcName(s))+'</div><div class="s">'+tl(before)+(pd>0?' − kullanılan '+tl(pd):' · kullanılmadı')+'</div></div><div class="v">'+tl(left)+'</div></div>';}).join("");
   if(srcRows)h+='<div class="ghead"><h3>Ödeme sonrası kaynaklar</h3><span class="muted" style="font-size:.8rem">kalan</span></div><div class="list">'+srcRows+'</div>';
@@ -357,10 +376,12 @@ function renderOzet(){
   else h+='<div class="empty">Gelirinin ya da hesabının bir kısmını altına, dövize, hisseye ya da TL birikime ayır. Önce "Planlıyorum" diye senaryo olarak gir, aldığında "Yaptım" yap.</div>';
   if(SP>0)h+='<div class="hint">Planlananlar henüz bakiyelere işlenmedi. "Yaptım" olarak işaretlediğinde kaynaktan düşülüp ilgili varlığa eklenir.</div>';
   h+='</section>';
-  var AV=assetsTotal(),KAL=AV+(G-Pinc)-BK-Hun;
+  var cm0=now(),fut=idx(m)>idx(cm0),AV=assetsTotal(idx(m)<idx(cm0)?m:cm0),DV=0;
+  if(fut){for(var di=idx(cm0);di<idx(m);di++)DV+=monthNet(fromIdx(di));}
+  var KAL=AV+DV+(G-Pinc)-BK-Hun;
   h+='<section class="card"><div class="row"><h2>Ay sonu kalan</h2><span class="muted" style="font-size:.85rem">'+mName(m)+'</span></div>'
    +'<div class="big" style="color:'+(KAL<0?'var(--bad)':'var(--ink)')+'">'+tl(KAL)+'</div><div class="list">'
-   +rowLine('Varlıklar <span class="muted">(ödemeler düşülmüş)</span>',tl(AV))+rowLine('+ Gelirden kalan <span class="muted">(sadece bu ay)</span>',tl(G-Pinc))
+   +rowLine('Varlıklar <span class="muted">(önceki ayların artanı dahil)</span>',tl(AV))+(fut?rowLine('+ Aradaki ayların artanı <span class="muted">(tahmini)</span>',tl(DV)):'')+rowLine('+ Gelirden kalan <span class="muted">(bu ay'+(S.incomes.some(function(x){return incActive(x,m)&&!incReceived(x,m)&&m===cm0;})?', yatacak olan dahil':'')+')</span>',tl(G-Pinc))
    +rowLine('− Henüz ödenmemiş borç <span class="muted">(bu ay)</span>',tl(BK))+rowLine('− Ödenmemiş harcamalar <span class="muted">(bu ay)</span>',tl(Hun))
    +'</div></section>';
   h+='<section class="card"><div class="grid2">'
@@ -377,8 +398,8 @@ function renderOzet(){
   h+='<section class="card"><div class="row"><h2>Önümüzdeki 12 ay taksit yükü</h2></div><div class="bars" role="img" aria-label="Aylara göre taksit toplamı">';
   months.forEach(function(x,j){var rr=x.g>0?x.b/x.g:(x.b>0?1:0);h+='<div class="bar'+(j===0?' cur':'')+'" title="'+mName(x.ym)+': '+tl(x.b)+'"><i class="'+(rr<.35?'':rr<.5?'warn':'bad')+'" style="height:'+(x.b/mx*100)+'%"></i><small>'+mShort(x.ym)+'</small></div>';});
   h+='</div><div class="legend muted"><span><i class="dot" style="background:var(--accent)"></i>gelirin %35\'inden az</span><span><i class="dot" style="background:var(--warn)"></i>%35–50</span><span><i class="dot" style="background:var(--bad)"></i>%50 üstü</span></div>'+drops(m)+'</section>';
-  var A=assetsTotal()+incomeLeftTotal(now()),D=remainingTotal(now());
-  h+='<section class="card"><div class="grid2"><div class="stat"><span class="label">Varlıklar + bu ayın geliri</span><b>'+tl(A)+'</b></div><div class="stat"><span class="label">Net durum</span><b style="color:'+(A-D<0?'var(--bad)':'var(--ink)')+'">'+tl(A-D)+'</b></div></div><div class="hint">Net durum = varlıklar ve bu ayın kalan geliri − bugünden itibaren kalan tüm borç.</div></section>';
+  var A=assetsTotal()+incomeLeftTotal(now(),true),D=remainingTotal(now());
+  h+='<section class="card"><div class="grid2"><div class="stat"><span class="label">Varlıklar + bu ayın geliri</span><b>'+tl(A)+'</b></div><div class="stat"><span class="label">Net durum</span><b style="color:'+(A-D<0?'var(--bad)':'var(--ink)')+'">'+tl(A-D)+'</b></div></div><div class="hint">Net durum = varlıklar ve hesaba yatmış gelirin kalanı − bugünden itibaren kalan tüm borç. Yatış günü gelmemiş maaş dahil değil.</div></section>';
   return h;
 }
 function rowLine(a,b){return '<div class="item"><div class="t">'+a+'</div><div class="v">'+b+'</div></div>';}
@@ -453,9 +474,9 @@ function renderCards(m){
 function renderGG(){
   var m=view.month,G=incomeIn(m),H=spentIn(m);
   var h=header("Gelir-Gider",true)+sampleNotice();
-  var inc=S.incomes.filter(function(x){return x.recurring||x.month===m;});
+  var inc=S.incomes.filter(function(x){return incActive(x,m);});
   h+='<section class="card"><div class="row"><h2>Gelirler</h2><button class="btn small" data-act="addIncome">+ Gelir</button></div>';
-  h+=inc.length?'<div class="list">'+inc.map(function(x){return '<div class="item tap" tabindex="0" role="button" data-act="editIncome" data-id="'+x.id+'"><div><div class="t">'+esc(x.title)+'</div><div class="s">'+(x.recurring?"Her ay":"Sadece "+mName(x.month))+'</div></div><div class="v">'+tl(x.amount)+'</div></div>';}).join("")+rowLine("<b>Toplam</b>","<b>"+tl(G)+"</b>")+'</div>':'<div class="empty">Maaşını "Her ay" olarak ekle; ek gelirleri sadece o aya yazabilirsin.</div>';
+  h+=inc.length?'<div class="list">'+inc.map(function(x){return '<div class="item tap" tabindex="0" role="button" data-act="editIncome" data-id="'+x.id+'"><div><div class="t">'+esc(x.title)+'</div><div class="s">'+(x.recurring?"Her ay"+(x.day?" · ayın "+x.day+"'i":"")+(x.since?" · "+mName(x.since)+"'dan beri":""):"Sadece "+mName(x.month)+(x.day?" · "+x.day+". gün":""))+(!incReceived(x,m)&&m===now()?' · <span class="gold" style="font-weight:600">bekleniyor</span>':'')+(x.recurring&&!(x.amounts&&+x.amounts[m]>0)&&idx(m)>=idx(now())?' · <span class="muted">tahmini tutar</span>':'')+'</div></div><div class="v">'+tl(incAmt(x,m))+'</div></div>';}).join("")+rowLine("<b>Toplam</b>","<b>"+tl(G)+"</b>")+'</div>':'<div class="empty">Maaşını "Her ay" olarak ekle; ek gelirleri sadece o aya yazabilirsin.</div>';
   h+='</section>';
   var ex=S.expenses.filter(function(x){return x.month===m;}).sort(function(a,b){return (b.day||0)-(a.day||0);});
   var bycat={};ex.forEach(function(x){bycat[x.cat]=(bycat[x.cat]||0)+(+x.amount||0);});
@@ -469,28 +490,32 @@ function renderGG(){
 
 function incAcct(x){var a=x&&x.acct?find(S.assets,x.acct):null;return a&&a.kind==="TL"?a:null;}
 function incLabel(x){var a=incAcct(x);return x.title+(a?" → "+(a.title||"TL hesap"):"");}
-function linkedLeft(aid,m){return incomeLeftList(m).filter(function(r){var a=incAcct(r.x);return a&&a.id===aid;});}
-function incomeLeftList(m){return S.incomes.filter(function(x){return x.recurring||x.month===m;}).map(function(x){var u=usedFromSrc("inc:"+x.id,m);return {x:x,used:u,left:Math.max(0,+x.amount-u)};});}
-function incomeLeftTotal(m){return incomeLeftList(m).reduce(function(a,r){return a+r.left;},0);}
+function linkedLeft(aid,m){return incomeLeftList(m,true).filter(function(r){var a=incAcct(r.x);return a&&a.id===aid;});}
+function incomeLeftList(m,rcv){return S.incomes.filter(function(x){return incActive(x,m)&&(!rcv||incReceived(x,m));}).map(function(x){var u=usedFromSrc("inc:"+x.id,m);return {x:x,used:u,left:Math.max(0,incAmt(x,m)-u)};});}
+function incomeLeftTotal(m,rcv){return incomeLeftList(m,rcv).reduce(function(a,r){return a+r.left;},0);}
 function renderVarlik(){
-  var cm=now(),ILall=incomeLeftList(cm),IT=incomeLeftTotal(cm);
-  var IL=ILall.filter(function(r){return !incAcct(r.x);}),ITu=IL.reduce(function(a,r){return a+r.left;},0),ITl=IT-ITu;
+  var cm=now(),ILall=incomeLeftList(cm,true),IT=incomeLeftTotal(cm,true);
+  var PEND=S.incomes.filter(function(x){return incActive(x,cm)&&!incReceived(x,cm);});
+  var UC=carryTo("",cm);
+  var IL=ILall.filter(function(r){return !incAcct(r.x);}),ITu=IL.reduce(function(a,r){return a+r.left;},0)+UC,ITl=IT-(ITu-UC);
   var A=assetsTotal()+IT;
   var h=header("Varlıklar",false)+sampleNotice()+ratesNotice();
   var by={GELIR:ITu,TL:ITl};S.assets.forEach(function(a){by[a.kind]=(by[a.kind]||0)+assetTL(a);});
-  var groups=[["GELIR","Bu ayın geliri",["GELIR"],"color-mix(in srgb,var(--gold) 45%,var(--accent))"],["TL","Türk lirası",["TL"],"var(--accent)"],["USD","Dolar",["USD"],"var(--ok)"],["EUR","Euro",["EUR"],"color-mix(in srgb,var(--accent) 50%,var(--ink))"],["ALTIN","Altın",GOLD,"var(--gold)"],["HISSE","Hisse senedi",["HISSE"],"var(--muted)"]];
+  var groups=[["GELIR","Hesapsız gelir",["GELIR"],"color-mix(in srgb,var(--gold) 45%,var(--accent))"],["TL","Türk lirası",["TL"],"var(--accent)"],["USD","Dolar",["USD"],"var(--ok)"],["EUR","Euro",["EUR"],"color-mix(in srgb,var(--accent) 50%,var(--ink))"],["ALTIN","Altın",GOLD,"var(--gold)"],["HISSE","Hisse senedi",["HISSE"],"var(--muted)"]];
   function gsum(g){return g[2].reduce(function(a,k){return a+(by[k]||0);},0);}
   h+='<section class="card"><span class="label">Likit varlıklar toplamı</span><div class="big">'+tl(A)+'</div>';
   var used=groups.filter(function(g){return gsum(g)>0;});
   if(A>0){h+='<div class="meter" style="background:var(--sunk)">'+used.map(function(g){return '<i style="width:'+(gsum(g)/A*100)+'%;background:'+g[3]+'"></i>';}).join("")+'</div><div class="legend">'+used.map(function(g){return '<span><i class="dot" style="background:'+g[3]+'"></i>'+g[1]+' %'+Math.round(gsum(g)/A*100)+'</span>';}).join("")+'</div>';}
   var gc=0,gv=0;S.assets.forEach(function(a){var g=gainOf(a);if(g){gc+=g.cost;gv+=g.cur;}});
   if(gc>0){var gd=gv-gc;h+='<div class="row" style="border-top:1px solid var(--line);padding-top:10px"><div><div class="label">Alış fiyatı girilen varlıklar</div><div class="s muted" style="font-size:.82rem">alış '+tl(gc)+' · şimdi '+tl(gv)+'</div></div><b class="num" style="color:'+(gd>=0?'var(--ok)':'var(--bad)')+'">'+(gd>=0?'+':'−')+tl(Math.abs(gd))+'</b></div>';}
-  h+='<div class="hint">Maaş ve diğer gelirlerin, '+mName(cm)+' içinde ödeme ve birikimlerden sonra kalan kısmıyla toplama dahil.</div>';
-  h+='<button class="btn primary fab" data-act="addAsset">+ Varlık ekle</button></section>';
-  h+='<section class="card"><div class="row"><h2>Bu ayın geliri</h2><span class="num" style="font-weight:600">'+tl(ITu)+'</span></div>';
-  if(ITl>0||ILall.length>IL.length)h+='<div class="hint">'+tl(ITl)+' tutarındaki gelirin, yattığı banka hesabının içinde görünüyor.</div>';
-  h+=IL.length?'<div class="list">'+IL.map(function(r){return '<div class="item tap" tabindex="0" role="button" data-act="editIncome" data-id="'+r.x.id+'"><div><div class="t">'+esc(r.x.title)+'</div><div class="s">'+tl(r.x.amount)+(r.used>0?' − kullanılan '+tl(r.used):' · henüz kullanılmadı')+' · '+(r.x.recurring?'her ay':'sadece '+mName(r.x.month))+'</div></div><div class="v">'+tl(r.left)+'</div></div>';}).join("")+'</div>'
-    :(ILall.length?'':'<div class="empty">Bu ay için gelir yok.</div>');
+  h+='<div class="hint">Hesaba yatmış gelirlerin, ödeme ve birikimlerden sonra kalan kısmı toplama dahil; önceki aylardan artan para da devreder.'+(PEND.length?' Yatış günü gelmemiş gelir ('+PEND.map(function(x){return esc(x.title)+' '+incDayTxt(x,cm);}).join(", ")+') yatınca eklenir.':'')+'</div>';
+  h+='<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn primary fab" data-act="buyAsset">Altın / döviz / hisse al</button><button class="btn fab" data-act="addAsset">+ Varlık ekle</button></div></section>';
+  h+='<section class="card"><div class="row"><h2>Gelir</h2><span class="num" style="font-weight:600">'+tl(ITu)+'</span></div>';
+  if(ILall.length>IL.length)h+='<div class="hint">'+tl(ITl)+' tutarındaki gelirin, yattığı banka hesabının içinde görünüyor.</div>';
+  if(PEND.length)h+='<div class="list">'+PEND.map(function(x){return '<div class="item tap" tabindex="0" role="button" data-act="editIncome" data-id="'+x.id+'"><div><div class="t">'+esc(x.title)+'</div><div class="s"><span class="gold" style="font-weight:600">Bekleniyor · '+incDayTxt(x,cm)+'</span>'+(incAcct(x)?' · '+esc(incAcct(x).title||"TL hesap")+' hesabına':'')+' · toplama dahil değil</div></div><div class="v muted">'+tl(incAmt(x,cm))+'</div></div>';}).join("")+'</div>';
+  if(UC>0.5)h+='<div class="list"><div class="item"><div><div class="t">Önceki aylardan devreden</div><div class="s">Hesaba bağlanmamış gelirin artanı. Geliri düzenleyip banka hesabını seçersen bu tutar o hesabın bakiyesine geçer.</div></div><div class="v">'+tl(UC)+'</div></div></div>';
+  h+=IL.length?'<div class="list">'+IL.map(function(r){return '<div class="item tap" tabindex="0" role="button" data-act="editIncome" data-id="'+r.x.id+'"><div><div class="t">'+esc(r.x.title)+'</div><div class="s">'+tl(incAmt(r.x,cm))+(r.used>0?' − kullanılan '+tl(r.used):' · henüz kullanılmadı')+' · '+(r.x.recurring?'her ay':'sadece '+mName(r.x.month))+'</div></div><div class="v">'+tl(r.left)+'</div></div>';}).join("")+'</div>'
+    :(ILall.length||PEND.length||UC>0.5?'':'<div class="empty">Bu ay için gelir yok.</div>');
   h+='<button class="btn small fab" data-act="addIncome">+ Gelir ekle</button></section>';
   function itemRow(a){var k=a.kind;
     var sub=k==="TL"?"":k==="HISSE"?n(a.qty)+" lot × "+tl2(a.price):(k==="GRAM"&&a.pcs&&a.unitG&&Math.abs(a.pcs*a.unitG-a.qty)<1e-6?n(a.pcs)+" adet × "+n(a.unitG)+" gr = ":"")+n(a.qty)+" "+ASSET_UNIT[k]+" × "+tl2(rateFor(k));
@@ -498,7 +523,8 @@ function renderVarlik(){
     var dt=buys.length?"son alış "+fmtDate(buys[0].date)+" (+"+n(buys.filter(function(x){return x.grp===buys[0].grp;}).reduce(function(s,x){return s+(+x.qty||0);},0))+" "+ASSET_UNIT[k]+")":(a.date?"alış "+fmtDate(a.date):"");
     if(dt)sub=sub?sub+" · "+dt:dt;
     var lk=k==="TL"?linkedLeft(a.id,cm):[],lt=lk.reduce(function(s2,r){return s2+r.left;},0);
-    var lkHtml=lk.length?'<div class="s">hesapta '+tl(assetTL(a))+lk.map(function(r){return ' + '+esc(r.x.title)+' kalanı '+tl(r.left);}).join("")+'</div>':'';
+    var cr=k==="TL"?carryTo(a.id,cm):0;
+    var lkHtml=(lk.length||cr>0.5)?'<div class="s">hesapta '+tl(assetTL(a))+(cr>0.5?' (önceki aylardan devreden '+tl(cr)+' dahil)':'')+lk.map(function(r){return ' + '+mName(cm).split(" ")[0]+' '+esc(r.x.title)+' kalanı '+tl(r.left);}).join("")+'</div>':'';
     return '<div class="item tap" tabindex="0" role="button" data-act="editAsset" data-id="'+a.id+'"><div><div class="t">'+esc(a.title||ASSET_TYPES[k])+'</div>'+(sub?'<div class="s">'+sub+'</div>':'')+lkHtml+gainHtml(gainOf(a))+'</div><div class="v">'+tl(assetTL(a)+lt)+'</div></div>';}
   groups.forEach(function(g){
     if(g[0]==="GELIR")return;
@@ -523,7 +549,7 @@ function renderKurlar(){
   h+='<section class="card"><h2>Güncel fiyatlar</h2><div class="hint">Bu fiyatlar varlıklarının (altın, döviz) güncel değerini hesaplar. Altın cinsinden borçlarında ise ayın TL tutarını sen girersin; kur değişince borç tutarın değişmez, sadece tutar girmediğin aylar için tahmin olarak kullanılır. Uygulama kurları kendisi çekmez; bankandan ya da kuyumcudan baktığın fiyatı yaz.</div>'
    +'<div class="fields2">'+rateField("usd","1 Dolar (₺)",r.usd)+rateField("eur","1 Euro (₺)",r.eur)+rateField("gram","1 gram altın (₺)",r.gram)+rateField("ceyrek","1 çeyrek altın (₺)",r.ceyrek)+rateField("yarim","1 yarım altın (₺)",r.yarim)+rateField("tam","1 tam altın (₺)",r.tam)+'</div>'
    +'<div class="row"><span class="hint">'+(r.updated?"Son güncelleme: "+new Date(r.updated).toLocaleString("tr-TR",{day:"numeric",month:"long",hour:"2-digit",minute:"2-digit"}):"Henüz güncellenmedi")+'</span><button class="btn primary small" data-act="saveRates">Kaydet</button></div></section>';
-  h+='<section class="card"><h2>Veriler ve yedek</h2><div class="hint">Verilerin sadece bu telefonda duruyor, internet gerekmez. Ayda bir yedek alıp dosyayı güvenli bir yere (Drive, e-posta) koy; telefon değişirse ya da veriler silinirse yedekten geri yüklersin.<br><span class="muted">Çevrimdışı sürüm 4</span></div>'
+  h+='<section class="card"><h2>Veriler ve yedek</h2><div class="hint">Verilerin sadece bu telefonda duruyor, internet gerekmez. Ayda bir yedek alıp dosyayı güvenli bir yere (Drive, e-posta) koy; telefon değişirse ya da veriler silinirse yedekten geri yüklersin.<br><span class="muted">Çevrimdışı sürüm 5</span></div>'
    +'<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn small primary" data-act="backup">Yedek al</button><button class="btn small" data-act="restore">Yedekten yükle</button><input type="file" id="restoreFile" accept="application/json,.json" hidden></div><div id="restoreMsg"></div>'
    +'<div id="wipe"><button class="btn danger small" data-act="wipe">Tüm verileri sil</button></div></section>';
   return h;
@@ -617,7 +643,7 @@ function payForm(p,presetDst){
   var gids=group.map(function(x){return x.id;});
   function gAmt(src){return group.filter(function(x){return x.src===src;}).reduce(function(a,x){return a+(+x.amount||0);},0);}
   var srcs=[];
-  S.incomes.forEach(function(x){if(x.recurring||x.month===m)srcs.push(["inc:"+x.id,"Gelir · "+incLabel(x)+" (kalan "+tl(+x.amount-usedFromSrc("inc:"+x.id,m)+gAmt("inc:"+x.id))+")"]);});
+  S.incomes.forEach(function(x){if(incActive(x,m))srcs.push(["inc:"+x.id,"Gelir · "+incLabel(x)+" (kalan "+tl(incAmt(x,m)-usedFromSrc("inc:"+x.id,m)+gAmt("inc:"+x.id))+")"]);});
   S.assets.forEach(function(a){srcs.push(["ast:"+a.id,ASSET_TYPES[a.kind]+" · "+(a.title||"")+" ("+tl(assetTL(a)+gAmt("ast:"+a.id))+")"]);});
   function isGun(dst){var q=splitRef(dst);if(q[0]!=="debt")return false;var d=find(S.debts,q[1]);return !!(d&&d.type==="gun");}
   function dueVal(dst){var e=document.getElementById("pay-due");if(e&&isGun(dst)&&e.dataset.dst===dst){var x=num(e.value);return x>0?x:dueOf(dst,m);}return dueOf(dst,m);}
@@ -689,48 +715,51 @@ function payForm(p,presetDst){
   }
 }
 function saveForm(s,preset){
-  var isNew=!s,m=s?s.month:view.month;
+  var isNew=!s,m=s?s.month:((preset&&preset.month)||view.month);
   var group=s?S.savings.filter(function(x){return x.id===s.id||(s.grp&&x.grp===s.grp);}):[];
   var gids=group.map(function(x){return x.id;});
   var first=group[0]||Object.assign({kind:"GRAM",target:"",newTitle:"",status:"plan",price:"",note:"",date:today()},preset||{});
   var status=first.status==="done"?"done":"plan";
   function back(src){return group.filter(function(x){return x.status==="done"&&x.src===src;}).reduce(function(a,x){return a+(+x.amount||0);},0);}
   var srcs=[];
-  S.incomes.forEach(function(x){if(x.recurring||x.month===m)srcs.push(["inc:"+x.id,"Gelir · "+incLabel(x)+" (kalan "+tl(+x.amount-usedFromSrc("inc:"+x.id,m)+back("inc:"+x.id))+")"]);});
+  S.incomes.forEach(function(x){if(incActive(x,m))srcs.push(["inc:"+x.id,"Gelir · "+incLabel(x)+" (kalan "+tl(incAmt(x,m)-usedFromSrc("inc:"+x.id,m)+back("inc:"+x.id))+")"]);});
   S.assets.forEach(function(a){srcs.push(["ast:"+a.id,ASSET_TYPES[a.kind]+" · "+(a.title||"")+" ("+tl(assetTL(a)+back("ast:"+a.id))+")"]);});
   function targetOpts(k){var o=S.assets.filter(function(a){return a.kind===k;}).map(function(a){return [a.id,(a.title||ASSET_TYPES[k])+" ("+n(a.qty)+" "+ASSET_UNIT[k]+")"];});o.push(["new","Yeni kayıt aç"]);return o;}
   function selOpts(o,val){return o.map(function(x){return '<option value="'+esc(x[0])+'"'+(x[0]===val?" selected":"")+'>'+esc(x[1])+'</option>';}).join("");}
-  function rowHtml(src,amt){return '<div class="srcrow"><select class="ps" aria-label="Kaynak">'+selOpts(srcs,src)+'</select><input class="pa" inputmode="decimal" aria-label="Bu kaynaktan ayrılan tutar" placeholder="Tutar" value="'+(amt?String(Math.round(amt*100)/100).replace(".",","):"")+'"><button type="button" class="iconbtn rm" aria-label="Kaynağı kaldır">✕</button></div>';}
+  function rowHtml(src,amt){return '<div class="srcrow"><select class="ps" aria-label="Kaynak">'+selOpts(srcs,src)+'</select><input class="pa" inputmode="decimal" aria-label="Bu kaynaktan ödenen tutar" placeholder="Ödediğin ₺" value="'+(amt?String(Math.round(amt*100)/100).replace(".",","):"")+'"><button type="button" class="iconbtn rm" aria-label="Kaynağı kaldır">✕</button></div>';}
   var k0=first.kind,to=targetOpts(k0),t0=first.target&&to.some(function(x){return x[0]===first.target;})?first.target:to[0][0];
   var body='<div class="seg" id="svStatus" role="group" aria-label="Durum"><button type="button" data-s="plan" aria-pressed="'+(status==="plan")+'">Planlıyorum (senaryo)</button><button type="button" data-s="done" aria-pressed="'+(status==="done")+'">Yaptım</button></div>';
   body+='<div class="fields2">'+sel("sv-kind","Ne alacaksın?",SAVE_KINDS.map(function(k){return [k,k==="TL"?"TL birikim":ASSET_TYPES[k]];}),k0)
     +'<div class="field"><label for="sv-target">Nereye eklensin?</label><select id="sv-target">'+selOpts(to,t0)+'</select></div></div>';
   body+='<div id="svNewWrap"'+(t0==="new"?"":" hidden")+'>'+fld("sv-newtitle","Yeni kaydın adı",first.newTitle,"text",'placeholder="Örn. Kasadaki altın, döviz hesabı"')+'</div>';
-  body+='<div class="fields2"><div id="svPriceWrap"'+(k0==="HISSE"?"":" hidden")+'>'+fld("sv-price","Lot fiyatı (₺)",first.price,"num")+'</div>'+fld("sv-qty","Almak istediğin miktar",group.reduce(function(a,x){return a+(+x.qty||0);},0)||"","num",'placeholder="isteğe bağlı"')+'</div>';
-  var rows=group.length?group.map(function(x){return rowHtml(x.src,x.amount);}).join(""):(srcs.length?rowHtml(srcs[0][0],""):"");
-  body+=srcs.length?'<div class="field"><label>Para nereden çıkacak?</label><div id="svRows" class="srcrows">'+rows+'</div><button type="button" class="btn small" id="svAddSrc" style="align-self:flex-start">+ Başka kaynak ekle</button></div>'
+  body+='<div class="fields2"><div id="svPriceWrap"'+(k0==="HISSE"?"":" hidden")+'>'+fld("sv-price","Güncel lot fiyatı (₺)",first.price,"num",'placeholder="boşsa alış fiyatı"')+'</div>'+fld("sv-qty","Miktar",group.reduce(function(a,x){return a+(+x.qty||0);},0)||"","num",'placeholder="Örn. 3"')+'</div>';
+  var tlA=S.assets.filter(function(a){return a.kind==="TL";})[0],defSrc=srcs.length?((preset&&preset.status==="done"&&tlA)?"ast:"+tlA.id:srcs[0][0]):"";
+  var rows=group.length?group.map(function(x){return rowHtml(x.src,x.amount);}).join(""):(srcs.length?rowHtml(defSrc,""):"");
+  body+=srcs.length?'<div class="field"><label>Hangi hesaptan, ne kadar ödedin? (₺)</label><div id="svRows" class="srcrows">'+rows+'</div><button type="button" class="btn small" id="svAddSrc" style="align-self:flex-start">+ Başka kaynak ekle</button></div>'
     :'<div class="empty">Önce Gelir-Gider sekmesinden maaşını ya da Varlıklar sekmesinden hesabını ekle.</div>';
   body+='<div class="notice" id="svSum" style="border-style:solid"></div>'+fld("sv-date","Tarih (aldığın ya da alacağın gün)",first.date||today(),"date")+fld("sv-note","Not (isteğe bağlı)",first.note,"text",'placeholder="Örn. kuyumcudan"');
   function kind(){return document.getElementById("sv-kind").value;}
   function price(){return kindPrice(kind(),num(document.getElementById("sv-price").value));}
   function readRows(){return Array.prototype.map.call(document.querySelectorAll("#svRows .srcrow"),function(r){return {src:r.querySelector(".ps").value,amount:num(r.querySelector(".pa").value)};});}
   function total(){return readRows().reduce(function(a,r){return a+r.amount;},0);}
-  function sum(){var box=document.getElementById("svSum"),k=kind(),p=price(),t=total();
-    if(!(p>0)){box.innerHTML='<span class="gold">'+(k==="HISSE"?"Lot fiyatını yaz.":ASSET_TYPES[k]+" fiyatı girilmemiş; önce Kurlar sekmesinden gir.")+'</span>';return;}
+  function sum(){var box=document.getElementById("svSum"),k=kind(),p=price(),t=total(),qi=num(document.getElementById("sv-qty").value);
+    if(k!=="TL"&&!(qi>0)){box.innerHTML='<span class="gold">Kaç '+(k==="TL"?"₺":ASSET_UNIT[k])+' '+(status==="done"?"aldığını":"alacağını")+' ve hesabından ne kadar '+(status==="done"?"çıktığını":"çıkacağını")+' yaz.</span>'+(p>0&&t>0?'<div class="muted">Güncel kurla '+tl(t)+' ≈ '+qtyText(k,t/p)+'</div>':'');return;}
+    if(!(p>0))p=qi>0&&t>0?t/qi:0;
     var G=incomeIn(m),B=debtLoad(m),H=spentIn(m);
     var qv=qtyVal(),uc=qv>0?t/qv:0;
     box.innerHTML='<div><b>'+tl(t)+'</b> ile <b>'+qtyText(k,qv)+'</b></div>'+(k!=="TL"&&qv>0?'<div class="muted">Birim alış '+tl2(uc)+' · güncel '+tl2(p)+(Math.abs(uc-p)>0.005?' · şimdiki değeri '+tl(qv*p)+' (<b style="color:'+(qv*p>=t?'var(--ok)':'var(--bad)')+'">'+(qv*p>=t?'+':'−')+tl(Math.abs(qv*p-t))+'</b>)':'')+'</div>':'')
       +(G>0?'<div class="muted">Bu ayın gelirindeki payı: %'+Math.round(t/G*100)+'. Borç ve harcamalardan sonra tasarruf edilebilir tutar '+tl(G-B-H)+'.</div>':'')
       +(t>G-B-H&&G>0?'<div class="gold">Bu tutar, bu ay borç ve harcamalardan sonra kalan paradan fazla.</div>':'')+overText(readRows(),m,back);}
   var qtyTouched=group.length>0,amtTouched=group.length>0;
-  function qtyVal(){var q=num(document.getElementById("sv-qty").value),p=price();return q>0?q:(p>0?total()/p:0);}
-  function setQtyFromRows(){var p=price(),q=document.getElementById("sv-qty");if(qtyTouched)return;if(p>0){var t=total();q.value=t>0?String(Math.round(t/p*1000)/1000).replace(".",","):"";}}
+  function qtyVal(){var q=num(document.getElementById("sv-qty").value),p=price();return q>0?q:(kind()==="TL"?total():(p>0?total()/p:0));}
+  function setQtyFromRows(){var p=price(),q=document.getElementById("sv-qty");if(p>0){var t=total();q.placeholder=t>0&&kind()!=="TL"?"kurla ≈ "+String(Math.round(t/p*1000)/1000).replace(".",","):"Örn. 3";}}
   function del(){group.forEach(function(x){saveApply(x,-1);});S.savings=S.savings.filter(function(x){return gids.indexOf(x.id)<0;});}
-  sheet(isNew?"Birikim / yatırım":"Birikimi düzenle",body,function(f){
+  sheet(isNew?(status==="done"?"Alım yap":"Birikim / yatırım"):"Alımı / birikimi düzenle",body,function(f){
     if(!srcs.length)return "Önce bir gelir ya da varlık ekle.";
-    var k=kind(),p=price(),rs=readRows().filter(function(r){return r.amount>0;}),tgt=v(f,"sv-target");
-    if(!(p>0))return k==="HISSE"?"Lot fiyatını yaz.":ASSET_TYPES[k]+" fiyatını Kurlar sekmesinden gir.";
-    if(!rs.length)return "Ne kadar ayıracağını yaz.";
+    var k=kind(),p=price(),rs=readRows().filter(function(r){return r.amount>0;}),tgt=v(f,"sv-target"),qi0=num(v(f,"sv-qty"));
+    if(!rs.length)return "Hesabından ne kadar ödediğini (₺) yaz.";
+    if(k!=="TL"&&!(qi0>0)){if(status==="done")return "Kaç "+ASSET_UNIT[k]+" aldığını yaz.";if(!(p>0))return "Miktarı yaz ya da Kurlar sekmesinden fiyatı gir.";}
+    if(!(p>0))p=rs.reduce(function(a,r){return a+r.amount;},0)/qi0;
     if(status==="done"){var ov=overdraw(rs,m,back);if(ov.length)return "Yetersiz bakiye: "+overMsg(ov)+" Henüz almadıysan \"Planlıyorum\" seç.";}
     for(var i=0;i<rs.length;i++){if(rs[i].src==="ast:"+tgt)return "Parayı çıkardığın hesap ile birikimin ekleneceği yer aynı olamaz.";
       if(status==="done"&&rs[i].src.indexOf("ast:")===0){var up=unitPrice(find(S.assets,rs[i].src.slice(4)));if(!(up>0))return srcName(rs[i].src)+" için fiyat girilmemiş.";rs[i].srcQty=rs[i].amount/up;}}
@@ -746,15 +775,16 @@ function saveForm(s,preset){
   document.getElementById("svStatus").addEventListener("click",function(e){var b=e.target.closest("button");if(!b)return;status=b.dataset.s;Array.prototype.forEach.call(this.querySelectorAll("button"),function(x){x.setAttribute("aria-pressed",String(x===b));});});
   document.getElementById("sv-kind").addEventListener("change",function(){var k=kind(),o=targetOpts(k);document.getElementById("sv-target").innerHTML=selOpts(o,o[0][0]);
     document.getElementById("svNewWrap").hidden=o[0][0]!=="new";document.getElementById("svPriceWrap").hidden=k!=="HISSE";
-    document.querySelector('label[for="sv-qty"]').textContent="Almak istediğin miktar ("+(k==="TL"?"₺":ASSET_UNIT[k])+")";setQtyFromRows();sum();});
+    document.querySelector('label[for="sv-qty"]').textContent="Miktar ("+(k==="TL"?"₺":ASSET_UNIT[k])+")";setQtyFromRows();sum();});
   document.getElementById("sv-target").addEventListener("change",function(){document.getElementById("svNewWrap").hidden=this.value!=="new";});
-  document.getElementById("sv-qty").addEventListener("input",function(){qtyTouched=this.value.trim()!=="";var q=num(this.value),p=price(),rs=rowsEl.querySelectorAll(".pa");if(p>0&&rs.length===1&&!amtTouched){rs[0].value=q>0?String(Math.round(q*p*100)/100).replace(".",","):"";}sum();});
+  document.getElementById("sv-qty").addEventListener("input",function(){var q=num(this.value),p=price(),rs=rowsEl.querySelectorAll(".pa");if(p>0&&rs.length===1&&!amtTouched){rs[0].placeholder=q>0?"kurla ≈ "+String(Math.round(q*p)):"Ödediğin ₺";}sum();});
   rowsEl.addEventListener("input",function(){amtTouched=true;setQtyFromRows();sum();});
   document.getElementById("sv-price").addEventListener("input",function(){setQtyFromRows();sum();});
   document.getElementById("svAddSrc").addEventListener("click",function(){var used=readRows().map(function(r){return r.src;}),next=(srcs.filter(function(s){return used.indexOf(s[0])<0;})[0]||srcs[0])[0];
     rowsEl.insertAdjacentHTML("beforeend",rowHtml(next,""));var ins=rowsEl.querySelectorAll(".pa");ins[ins.length-1].focus();});
   rowsEl.addEventListener("click",function(e){var b=e.target.closest(".rm");if(!b)return;if(rowsEl.children.length>1){b.parentNode.remove();setQtyFromRows();sum();}});
-  document.querySelector('label[for="sv-qty"]').textContent="Almak istediğin miktar ("+(k0==="TL"?"₺":ASSET_UNIT[k0])+")";
+  document.querySelector('label[for="sv-qty"]').textContent="Miktar ("+(k0==="TL"?"₺":ASSET_UNIT[k0])+")";
+  document.getElementById("svStatus").addEventListener("click",sum);
   sum();
 }
 function cardForm(c){
@@ -786,14 +816,28 @@ function cardPlanForm(c){
 }
 function incomeForm(x){
   var isNew=!x;x=x||{title:"",amount:"",recurring:true,month:view.month};
-  var body=fld("i-title","Gelir adı",x.title,"text",'placeholder="Örn. Maaş"')+fld("i-amount","Tutar (₺)",x.amount,"num")+sel("i-rec","Ne sıklıkla?",[["1","Her ay"],["0","Sadece "+mName(x.recurring?view.month:x.month)]],x.recurring?"1":"0");
+  var body=fld("i-title","Gelir adı",x.title,"text",'placeholder="Örn. Maaş"')+sel("i-rec","Ne sıklıkla?",[["1","Her ay"],["0","Sadece "+mName(x.recurring?view.month:x.month)]],x.recurring?"1":"0")
+    +'<div class="fields2">'+fld("i-amount","Tutar · "+mName(x.recurring?view.month:x.month)+" (₺)",isNew?"":incAmt(x,x.recurring?view.month:x.month),"num")+'<div id="defWrap"'+(x.recurring?'':' hidden')+'>'+fld("i-def","Diğer aylar için tahmini (₺)",isNew?"":x.amount,"num",'placeholder="boşsa aynı tutar"')+'</div></div>'
+    +'<div class="hint" id="defHint"'+(x.recurring?'':' hidden')+'>Maaşın her ay farklıysa ilgili aya geçip o ayın tutarını yaz. Tahmini tutarı değiştirmek geçmiş ayları değiştirmez; sadece tutarı girilmemiş gelecek ayları etkiler.</div>';
+  body+='<div class="fields2">'+fld("i-day","Hesaba yattığı gün",x.day||"","num",'placeholder="Örn. 15"')+'<div id="sinceWrap"'+(x.recurring?'':' hidden')+'>'+fld("i-since","İlk ay",x.since||view.month,"month")+'</div></div><div class="hint">Yattığı günü yazarsan, o gün gelene kadar gelir varlıklarda görünmez. Her ayın artanı bir sonraki aya devreder.</div>';
   var accts=[["","Hesap seçme"]].concat(S.assets.filter(function(a){return a.kind==="TL";}).map(function(a){return [a.id,a.title||"TL hesap"];}));
   body+=sel("i-acct","Hangi banka hesabına yatıyor?",accts,x.acct&&incAcct(x)?x.acct:"")+'<div class="hint">Hesap seçersen bu gelirin kalan kısmı Varlıklar\'da o hesabın bakiyesiyle birlikte görünür. Listede hesabın yoksa önce Varlıklar\'a Türk lirası olarak ekle.</div>';
   sheet(isNew?"Gelir ekle":"Geliri düzenle",body,function(f){
-    var nx={id:x.id||uid(),title:v(f,"i-title"),amount:num(v(f,"i-amount")),recurring:v(f,"i-rec")==="1",month:x.recurring?view.month:x.month,acct:v(f,"i-acct")};
-    if(!nx.title)nx.title="Maaş";if(!(nx.amount>0))return "Tutarı yaz (örn. 85000).";
+    var dd=Math.round(num(v(f,"i-day"))),sn=v(f,"i-since");
+    var mA=num(v(f,"i-amount")),dA=num(v(f,"i-def")),rec=v(f,"i-rec")==="1",vm=x.recurring?view.month:x.month;
+    if(!(mA>0))return "Tutarı yaz (örn. 85000).";
+    var nx={id:x.id||uid(),title:v(f,"i-title"),amount:mA,recurring:rec,month:vm,acct:v(f,"i-acct"),day:dd>=1&&dd<=31?dd:""};
+    if(rec){nx.since=/^\d{4}-\d{2}$/.test(sn)?sn:(x.since||view.month);
+      var oldDef=+x.amount||0,newDef=dA>0?dA:(isNew||!x.recurring?mA:oldDef);nx.amount=newDef;
+      var am=Object.assign({},x.amounts||{});
+      if(!isNew&&x.recurring&&oldDef>0&&newDef!==oldDef){var end=Math.max(idx(now()),idx(vm));for(var i=idx(x.since||vm);i<=end;i++){var ym=fromIdx(i);if(ym!==vm&&!(+am[ym]>0))am[ym]=oldDef;}}
+      if(mA!==newDef)am[vm]=mA;else delete am[vm];
+      for(var k in am){if(+am[k]===newDef&&idx(k)>idx(now()))delete am[k];}
+      nx.amounts=am;}
+    if(!nx.title)nx.title="Maaş";
     if(isNew)S.incomes.push(nx);else S.incomes[S.incomes.findIndex(function(y){return y.id===x.id;})]=nx;
   },isNew?null:function(){S.incomes=S.incomes.filter(function(y){return y.id!==x.id;});});
+  document.getElementById("i-rec").addEventListener("change",function(){var r=this.value!=="1";document.getElementById("sinceWrap").hidden=r;document.getElementById("defWrap").hidden=r;document.getElementById("defHint").hidden=r;});
 }
 function expStatus(x){var ps=expParts(x),u=expUnpaid(x);
   if(!ps.length)return '<div class="s" style="color:var(--warn);font-weight:600">ödenmedi</div>';
@@ -804,7 +848,7 @@ function expenseForm(x){
   var old=expParts(x);
   function back(s){return old.filter(function(p){return p.src===s;}).reduce(function(a,p){return a+(+p.amount||0);},0);}
   var srcs=[];
-  S.incomes.forEach(function(y){if(y.recurring||y.month===x.month)srcs.push(["inc:"+y.id,"Gelir · "+incLabel(y)+" (kalan "+tl(+y.amount-usedFromSrc("inc:"+y.id,x.month)+back("inc:"+y.id))+")"]);});
+  S.incomes.forEach(function(y){if(incActive(y,x.month))srcs.push(["inc:"+y.id,"Gelir · "+incLabel(y)+" (kalan "+tl(incAmt(y,x.month)-usedFromSrc("inc:"+y.id,x.month)+back("inc:"+y.id))+")"]);});
   S.assets.forEach(function(a){srcs.push(["ast:"+a.id,ASSET_TYPES[a.kind]+" · "+(a.title||"")+" ("+tl(assetTL(a)+back("ast:"+a.id))+")"]);});
   function rowHtml(src,amt){return '<div class="srcrow"><select class="ps" aria-label="Kaynak">'+srcs.map(function(o){return '<option value="'+esc(o[0])+'"'+(o[0]===src?" selected":"")+'>'+esc(o[1])+'</option>';}).join("")+'</select><input class="pa" inputmode="decimal" aria-label="Bu kaynaktan ödenen" placeholder="Tutar" value="'+(amt?String(Math.round(amt*100)/100).replace(".",","):"")+'"><button type="button" class="iconbtn rm" aria-label="Kaynağı kaldır">✕</button></div>';}
   var body='<div class="fields2">'+sel("e-cat","Kategori",CATS.map(function(c){return [c,c];}),x.cat)+fld("e-day","Gün ("+TR_MONTHS[+x.month.split("-")[1]-1]+")",x.day,"num",'placeholder="isteğe bağlı"')+'</div>'+fld("e-desc","Açıklama",x.desc,"text",'placeholder="Örn. Haftalık market"')+fld("e-amount","Tutar (₺)",x.amount,"num");
@@ -840,10 +884,10 @@ function assetForm(a){
   var body=sel("a-kind","Tür",Object.keys(ASSET_TYPES).map(function(k){return [k,ASSET_TYPES[k]];}),a.kind)+fld("a-title","Açıklama",a.title,"text",'placeholder="Örn. Vadesiz hesap, kasadaki altın"')
    +'<div id="pcsWrap"'+(a.kind==="GRAM"?"":" hidden")+'><div class="fields2">'+fld("a-pcs","Adet",a.pcs||"","num",'placeholder="Örn. 3"')+fld("a-unit","Birim gram (1 adedi)",a.unitG||"","num",'placeholder="Örn. 5"')+'</div><div class="hint">Adet ve birim gramı yazarsan toplam gram kendiliğinden hesaplanır (3 adet × 5 gr = 15 gr). Boş bırakıp toplam gramı da yazabilirsin.</div></div>'
    +'<div class="fields2">'+fld("a-qty",qtyLabel(a.kind),a.qty,"num")+'<div id="priceWrap"'+(a.kind==="HISSE"?"":" hidden")+'>'+fld("a-price","Lot fiyatı (₺)",a.price,"num")+'</div></div>'+'<div class="fields2">'+fld("a-date","Alış tarihi",a.date||"","date")+'<div id="costWrap"'+(a.kind==="TL"?" hidden":"")+'>'+fld("a-cost","Alış tutarı (toplam ₺)",a.cost||"","num",'placeholder="isteğe bağlı"')+'</div></div><div class="hint" id="assetHint">'+assetHint(a.kind)+'</div>';
-  var cm=now(),srcOpts=[["","Zaten elimde (bir yerden düşme)"]];
-  S.incomes.forEach(function(y){if(y.recurring||y.month===cm)srcOpts.push(["inc:"+y.id,"Gelir · "+incLabel(y)+" (kalan "+tl(+y.amount-usedFromSrc("inc:"+y.id,cm))+")"]);});
+  var cm=now(),srcOpts=[["","Hayır, zaten elimde"]];
+  S.incomes.forEach(function(y){if(incActive(y,cm))srcOpts.push(["inc:"+y.id,"Gelir · "+incLabel(y)+" (kalan "+tl(incAmt(y,cm)-usedFromSrc("inc:"+y.id,cm))+")"]);});
   S.assets.forEach(function(x){if(x.id!==a.id)srcOpts.push(["ast:"+x.id,ASSET_TYPES[x.kind]+" · "+(x.title||"")+" ("+tl(assetTL(x))+")"]);});
-  if(isNew)body+=sel("a-src","Nereden alındı?",srcOpts,"")+'<div class="notice" id="aBuy" style="border-style:solid" hidden></div>';
+  if(isNew)body+=sel("a-src","Parası hesabımdan çıksın mı?",srcOpts,"")+'<div class="notice" id="aBuy" style="border-style:solid" hidden></div>';
   else body+='<button type="button" class="btn small" id="aBuyMore" style="align-self:flex-start">+ Bu varlığa maaştan / hesaptan alım ekle</button>';
   sheet(isNew?"Varlık ekle":"Varlığı düzenle",body,function(f){
     var na={id:a.id||uid(),kind:v(f,"a-kind"),title:v(f,"a-title"),qty:num(v(f,"a-qty")),price:num(v(f,"a-price")),date:v(f,"a-date")};
@@ -852,9 +896,10 @@ function assetForm(a){
     var cst=na.kind==="TL"?0:num(v(f,"a-cost"));
     if(cst>0){na.cost=cst;na.costQty=(!isNew&&cst===+a.cost&&na.qty===+a.qty&&a.costQty)?a.costQty:na.qty;}else{na.cost=0;na.costQty=0;}
     var bsrc=isNew?v(f,"a-src"):"";
-    if(bsrc){var bp=kindPrice(na.kind,na.price);if(!(bp>0)&&!(cst>0))return ASSET_TYPES[na.kind]+" fiyatı girilmemiş; önce Kurlar sekmesinden gir.";
-      if(!(na.qty>0))return "Miktar 0'dan büyük olmalı.";
-      var amt=cst>0?cst:Math.round(na.qty*bp*100)/100,ov=overdraw([{src:bsrc,amount:amt}],cm);if(ov.length)return "Yetersiz bakiye: "+overMsg(ov);
+    if(bsrc){if(!(na.qty>0))return "Miktar 0'dan büyük olmalı.";
+      if(!(cst>0))return "Ödediğin toplam tutarı (₺) yaz; hesabından bu tutar düşülecek.";
+      if(na.kind==="HISSE"&&!(na.price>0))na.price=Math.round(cst/na.qty*100)/100;
+      var amt=cst,ov=overdraw([{src:bsrc,amount:amt}],cm);if(ov.length)return "Yetersiz bakiye: "+overMsg(ov);
       var sx={id:uid(),grp:uid(),month:cm,src:bsrc,amount:amt,srcQty:0,kind:na.kind,target:na.id,newTitle:"",price:na.kind==="HISSE"?na.price:0,qty:na.qty,status:"done",note:"",date:na.date||today()};
       if(bsrc.indexOf("ast:")===0){var up=unitPrice(find(S.assets,bsrc.slice(4)));if(!(up>0))return srcName(bsrc)+" için fiyat girilmemiş.";sx.srcQty=amt/up;}
       na.qty=0;na.cost=0;na.costQty=0;S.assets.push(na);saveApply(sx,1);S.savings.push(sx);return;}
@@ -866,9 +911,10 @@ function assetForm(a){
   function buyInfo(){var box=document.getElementById("aBuy"),s=document.getElementById("a-src");if(!box||!s)return;if(!s.value){box.hidden=true;return;}box.hidden=false;
     var k=document.getElementById("a-kind").value,q=num(document.getElementById("a-qty").value),p=kindPrice(k,num(document.getElementById("a-price").value));
     var cst=num(document.getElementById("a-cost").value);
-    if(!(p>0)&&!(cst>0)){box.innerHTML='<span class="gold">'+ASSET_TYPES[k]+' fiyatı girilmemiş; önce Kurlar sekmesinden gir.</span>';return;}
-    var amt=cst>0?cst:q*p;box.innerHTML='<div>'+(q>0?qtyText(k,q)+' = <b>'+tl(amt)+'</b>, '+esc(srcName(s.value))+' kaynağından düşülecek.':'Miktarı yaz, tutar hesaplansın.')+'</div>'+overText([{src:s.value,amount:amt}],cm);}
+    if(!(cst>0)){box.innerHTML='<span class="gold">Ödediğin toplam tutarı yaz.</span>'+(q>0&&p>0?'<div class="muted">Güncel kurla ≈ '+tl(q*p)+'</div>':'');return;}
+    box.innerHTML='<div>'+(q>0?qtyText(k,q)+' için <b>'+tl(cst)+'</b> '+esc(srcName(s.value))+' kaynağından düşülecek.<div class="muted">Birim alış '+tl2(cst/q)+(p>0?' · güncel '+tl2(p):'')+'</div>':'Miktarı yaz.')+'</div>'+overText([{src:s.value,amount:cst}],cm);}
   document.getElementById("sheetForm").addEventListener("input",buyInfo);document.getElementById("sheetForm").addEventListener("change",buyInfo);
+  var asrc=document.getElementById("a-src");if(asrc)asrc.addEventListener("change",function(){var l=document.querySelector('label[for="a-cost"]'),c=document.getElementById("a-cost");l.textContent=this.value?"Ödediğin tutar (toplam ₺)":"Alış tutarı (toplam ₺)";c.placeholder=this.value?"zorunlu":"isteğe bağlı";});
   var bm=document.getElementById("aBuyMore");if(bm)bm.addEventListener("click",function(){saveForm(null,{kind:a.kind,target:a.id,status:"done",price:a.kind==="HISSE"?a.price:""});});
   document.getElementById("a-pcs").addEventListener("input",calcG);document.getElementById("a-unit").addEventListener("input",calcG);
   document.getElementById("a-kind").addEventListener("change",function(e){var k=e.target.value;document.getElementById("pcsWrap").hidden=k!=="GRAM";document.getElementById("costWrap").hidden=k==="TL";document.querySelector('label[for="a-qty"]').textContent=qtyLabel(k);document.getElementById("priceWrap").hidden=k!=="HISSE";document.getElementById("assetHint").textContent=assetHint(k);});
@@ -902,6 +948,7 @@ document.addEventListener("click",function(e){
     case"addExpense":expenseForm(null);break;
     case"editExpense":expenseForm(find(S.expenses,el.dataset.id));break;
     case"addAsset":assetForm(null);break;
+    case"buyAsset":saveForm(null,{status:"done",month:now()});break;
     case"editAsset":assetForm(find(S.assets,el.dataset.id));break;
     case"close":case"closeBg":closeSheet();break;
     case"clearSample":S=blank();dirty=true;commit();toast("Örnekler silindi. Önce Kurlar sekmesinden fiyatları gir.");break;
@@ -939,6 +986,7 @@ function renderNav(){
   document.getElementById("nav").innerHTML=tabs.map(function(t){return '<button class="navbtn" data-act="tab" data-tab="'+t[0]+'"'+(view.tab===t[0]?' aria-current="page"':'')+'><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+ICONS[t[0]]+'</svg>'+t[1]+'</button>';}).join("");
 }
 function render(){
+  CC=null;
   var f={ozet:renderOzet,borc:renderBorc,gg:renderGG,varlik:renderVarlik,kurlar:renderKurlar}[view.tab]||renderOzet;
   app.innerHTML=f();renderNav();
 }
